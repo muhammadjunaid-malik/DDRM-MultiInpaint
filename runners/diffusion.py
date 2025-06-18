@@ -134,7 +134,6 @@ class Diffusion(object):
             else:
                 ckpt = os.path.join(self.args.exp, "logs","imagenet", self.config.diffusion.checkpoint_name)
                 print("Loading checkpoint {}".format(ckpt))
-                ckpt = os.path.join(self.args.exp, "logs/imagenet/256x256_diffusion_uncond.pt")
                 if not os.path.exists(ckpt):
                     print("Downloading checkpoint ... Not found at {}".format(ckpt))
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/256x256_diffusion_uncond.pt', ckpt)
@@ -172,7 +171,6 @@ class Diffusion(object):
             self.sample_sequence(model, cls_fn)
         else:
             self.get_custom_sample_sequence(model)
-    
     
     def get_custom_sample_sequence(self, model):
         args, config = self.args, self.config

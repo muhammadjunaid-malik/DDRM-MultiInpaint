@@ -184,7 +184,7 @@ def get_dataset(args, config):
                 transform=transforms.Compose([partial(center_crop_arr, image_size=config.data.image_size),
                 transforms.ToTensor()])
             )
-            test_dataset = dataset        
+            test_dataset = dataset
         else:
             dataset = torchvision.datasets.ImageNet(
                 os.path.join(args.exp, 'datasets', 'imagenet'), split='val',
@@ -197,6 +197,8 @@ def get_dataset(args, config):
 
     return dataset, test_dataset
 
+# Load data for image_mask pair dataset
+
 def get_image_mask_dataset(args, config): 
     if config.data.custom_dataloader:
             from datasets.custom_image_mask_dataloader import ImageMaskDataset,CenterCropTransform
@@ -204,6 +206,8 @@ def get_image_mask_dataset(args, config):
             dataset = ImageMaskDataset(config.data.image_dir, config.data.mask_dir, transform=transform, image_size=256)
             test_dataset = dataset
     return dataset, test_dataset
+   
+
 
 def logit_transform(image, lam=1e-6):
     image = lam + (1 - 2 * lam) * image
