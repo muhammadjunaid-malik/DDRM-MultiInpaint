@@ -176,6 +176,15 @@ def get_dataset(args, config):
                 transforms.ToTensor()])
             )
             test_dataset = dataset
+        elif config.data.custom_dataset:
+            if not os.path.exists(os.path.join(args.exp, 'datasets', 'custom_data_imagenet',config.data.image_name)):
+                raise ValueError("Custom dataset path does not exist: {}".format(os.path.join(args.exp, 'datasets', 'custom_data_imagenet',config.data.image_name,"rgb")))
+            dataset = torchvision.datasets.ImageFolder(
+                os.path.join(args.exp, 'datasets', 'custom_data_imagenet',config.data.image_name),
+                transform=transforms.Compose([partial(center_crop_arr, image_size=config.data.image_size),
+                transforms.ToTensor()])
+            )
+            test_dataset = dataset        
         else:
             dataset = torchvision.datasets.ImageNet(
                 os.path.join(args.exp, 'datasets', 'imagenet'), split='val',
@@ -188,6 +197,13 @@ def get_dataset(args, config):
 
     return dataset, test_dataset
 
+def get_image_mask_dataset(args, config): 
+    if config.data.custom_dataloader:
+            from datasets.custom_image_mask_dataloader import ImageMaskDataset,CenterCropTransform
+            transform = CenterCropTransform(image_size=256)
+            dataset = ImageMaskDataset(config.data.image_dir, config.data.mask_dir, transform=transform, image_size=256)
+            test_dataset = dataset
+    return dataset, test_dataset
 
 def logit_transform(image, lam=1e-6):
     image = lam + (1 - 2 * lam) * image

@@ -2,6 +2,7 @@ import os
 import logging
 import time
 import glob
+from PIL import Image
 
 import numpy as np
 import tqdm
@@ -9,9 +10,10 @@ import torch
 import torch.utils.data as data
 
 from models.diffusion import Model
-from datasets import get_dataset, data_transform, inverse_data_transform
+from datasets import get_dataset, get_image_mask_dataset, data_transform, inverse_data_transform
 from functions.ckpt_util import get_ckpt_path, download
 from functions.denoising import efficient_generalized_steps
+from functions.svd_replacement import Inpainting
 
 import torchvision.utils as tvu
 
@@ -83,13 +85,16 @@ class Diffusion(object):
         posterior_variance = (
             betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         )
+        #fixedlarge: more stochastic, more diverse samples.
         if self.model_var_type == "fixedlarge":
             self.logvar = betas.log()
             # torch.cat(
             # [posterior_variance[1:2], betas[1:]], dim=0).log()
+        #fixedsmall: more deterministic, cleaner samples.
         elif self.model_var_type == "fixedsmall":
             self.logvar = posterior_variance.clamp(min=1e-20).log()
-
+    
+    # Loads a specific model for sampling
     def sample(self):
         cls_fn = None
         if self.config.model.type == 'simple':    
@@ -110,7 +115,7 @@ class Diffusion(object):
                 #ckpt = '~/.cache/diffusion_models_converted/celeba_hq.ckpt'
                 ckpt = os.path.join(self.args.exp, "logs/celeba/celeba_hq.ckpt")
                 if not os.path.exists(ckpt):
-                    download('https://image-editing-test-12345.s3-us-west-2.amazonaws.com/checkpoints/celeba_hq.ckpt', ckpt)
+                    download('https://huggingface.co/gwang-kim/DiffusionCLIP-CelebA_HQ/blob/main/celeba_hq.ckpt', ckpt)
             else:
                 raise ValueError
             model.load_state_dict(torch.load(ckpt, map_location=self.device))
@@ -127,8 +132,11 @@ class Diffusion(object):
                 if not os.path.exists(ckpt):
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/%dx%d_diffusion_uncond.pt' % (self.config.data.image_size, self.config.data.image_size), ckpt)
             else:
+                ckpt = os.path.join(self.args.exp, "logs","imagenet", self.config.diffusion.checkpoint_name)
+                print("Loading checkpoint {}".format(ckpt))
                 ckpt = os.path.join(self.args.exp, "logs/imagenet/256x256_diffusion_uncond.pt")
                 if not os.path.exists(ckpt):
+                    print("Downloading checkpoint ... Not found at {}".format(ckpt))
                     download('https://openaipublic.blob.core.windows.net/diffusion/jul-2021/256x256_diffusion_uncond.pt', ckpt)
                 
             
@@ -159,8 +167,113 @@ class Diffusion(object):
                         selected = log_probs[range(len(logits)), y.view(-1)]
                         return torch.autograd.grad(selected.sum(), x_in)[0] * self.config.classifier.classifier_scale
                 cls_fn = cond_fn
+        
+        if not self.config.data.custom_dataloader:
+            self.sample_sequence(model, cls_fn)
+        else:
+            self.get_custom_sample_sequence(model)
+    
+    
+    def get_custom_sample_sequence(self, model):
+        args, config = self.args, self.config
 
-        self.sample_sequence(model, cls_fn)
+        dataset, test_dataset = get_image_mask_dataset(args, config)
+        device_count = torch.cuda.device_count()
+
+        if args.subset_start >= 0 and args.subset_end > 0:
+            assert args.subset_end > args.subset_start
+            test_dataset = torch.utils.data.Subset(test_dataset, range(args.subset_start, args.subset_end))
+        else:
+            args.subset_start = 0
+            args.subset_end = len(test_dataset)
+
+        print(f'Dataset has size {len(test_dataset)}')    
+        
+
+        val_loader = data.DataLoader(
+            test_dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=config.data.num_workers,
+        )
+
+        ## get degradation matrix ##
+        deg = args.deg
+        H_funcs = None
+
+        ## Iterate through the data and extra image mask pairs:
+
+        args.sigma_0 = 2 * args.sigma_0 #to account for scaling to [-1,1]
+        sigma_0 = args.sigma_0
+        
+        print(f'Start from {args.subset_start}')
+        idx_init = args.subset_start
+        idx_so_far = args.subset_start
+        avg_psnr = 0.0
+        pbar = tqdm.tqdm(val_loader)
+        for x_orig, segmentation_mask in pbar:
+
+            ## Mask degradation
+            loaded = np.array(segmentation_mask)
+            mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
+            missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
+            
+            missing_g = missing_r + 1
+            missing_b = missing_g + 1
+            missing = torch.cat([missing_r, missing_g, missing_b], dim=0)
+            H_funcs = Inpainting(config.data.channels, config.data.image_size, missing, self.device)
+
+            # Original image processing
+            x_orig = x_orig.to(self.device)
+            x_orig = data_transform(self.config, x_orig)
+
+            y_0 = H_funcs.H(x_orig)
+            y_0 = y_0 + sigma_0 * torch.randn_like(y_0)
+
+            pinv_y_0 = H_funcs.H_pinv(y_0).view(y_0.shape[0], config.data.channels, self.config.data.image_size, self.config.data.image_size)
+            pinv_y_0 += H_funcs.H_pinv(H_funcs.H(torch.ones_like(pinv_y_0))).reshape(*pinv_y_0.shape) - 1
+
+            for i in range(len(pinv_y_0)):
+                tvu.save_image(
+                    inverse_data_transform(config, pinv_y_0[i]), os.path.join(self.args.image_folder, f"y0_{idx_so_far + i}.png")
+                )
+                tvu.save_image(
+                    inverse_data_transform(config, x_orig[i]), os.path.join(self.args.image_folder, f"orig_{idx_so_far + i}.png")
+                )
+
+            ##Begin DDIM
+            x = torch.randn(
+                y_0.shape[0],
+                config.data.channels,
+                config.data.image_size,
+                config.data.image_size,
+                device=self.device,
+            )
+
+            # NOTE: This means that we are producing each predicted x0, not x_{t-1} at timestep t.
+            with torch.no_grad():
+                x, _ = self.sample_image(x, model, H_funcs, y_0, sigma_0, last=False)
+
+            x = [inverse_data_transform(config, y) for y in x]
+
+            for i in [-1]: #range(len(x)):
+                for j in range(x[i].size(0)):
+                    tvu.save_image(
+                        x[i][j], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{i}.png")
+                    )
+                    if i == len(x)-1 or i == -1:
+                        orig = inverse_data_transform(config, x_orig[j])
+                        mse = torch.mean((x[i][j].to(self.device) - orig) ** 2)
+                        psnr = 10 * torch.log10(1 / mse)
+                        avg_psnr += psnr
+
+            idx_so_far += y_0.shape[0]
+
+            pbar.set_description("PSNR: %.2f" % (avg_psnr / (idx_so_far - idx_init)))
+
+        avg_psnr = avg_psnr / (idx_so_far - idx_init)
+        print("Total Average PSNR: %.2f" % avg_psnr)
+        print("Number of samples: %d" % (idx_so_far - idx_init))
 
     def sample_sequence(self, model, cls_fn=None):
         args, config = self.args, self.config
@@ -213,6 +326,24 @@ class Diffusion(object):
                 loaded = np.load("inp_masks/lorem3.npy")
                 mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
                 missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
+            elif deg == 'inp_tum':
+                loaded = np.load("inp_masks/cropped_segmentation.npy")
+                mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
+                missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
+            elif deg == 'inp_custom_png':
+                path = os.path.join('inp_masks', self.config.data.image_name, f"{self.config.data.image_name}.png")
+                if not os.path.exists(path):
+                    print(f"Mask file {path} does not exist. Please provide a valid mask image.")
+                    raise ValueError(f"Custom Mask file {path} does not exist. Please provide a valid mask image.")
+
+                else:
+                    print(f"Using mask file {path} for inpainting.")
+                    # Load the segmentation mask image
+                    segmentation_mask = Image.open(path) 
+                    # Convert image to NumPy array
+                    loaded = np.array(segmentation_mask)
+                    mask = torch.from_numpy(loaded).to(self.device).reshape(-1)
+                    missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
             else:
                 missing_r = torch.randperm(config.data.image_size**2)[:config.data.image_size**2 // 2].to(self.device).long() * 3
             missing_g = missing_r + 1

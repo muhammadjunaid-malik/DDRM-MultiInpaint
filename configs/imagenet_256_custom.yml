@@ -1,0 +1,51 @@
+data:
+    dataset: "ImageNet"
+    image_size: 256
+    channels: 3
+    logit_transform: false
+    uniform_dequantization: false
+    gaussian_dequantization: false
+    random_flip: true
+    rescaled: true
+    num_workers: 32
+    subset_1k: False
+    out_of_dist: False
+    custom_dataloader: True
+    image_name: "image_2" # Name of the image
+    image_dir: "/ddrm/custom_tum_data/full_data_corrected_masks/rgb" # Path to the dataset directory
+    mask_dir: "/ddrm/custom_tum_data/full_data_corrected_masks/segmentations" # Path to the png segmentation mask directory
+
+model:
+    type: "openai"
+    in_channels: 3
+    out_channels: 3
+    num_channels: 256
+    num_heads: 4 # num_heads = num_channels / num_head_channels
+    num_res_blocks: 2
+    attention_resolutions: "32,16,8"
+    dropout: 0.0
+    resamp_with_conv: True
+    learn_sigma: True
+    use_scale_shift_norm: true
+    use_fp16: true
+    resblock_updown: true
+    num_heads_upsample: -1
+    #fixedlarge more stochastic, more diverse samples.
+    #fixedsmall more deterministic, cleaner samples.
+    var_type: "fixedsmall"
+    num_head_channels: 64
+    image_size: 256
+    class_cond: false
+    use_new_attention_order: false
+
+diffusion:
+    beta_schedule: linear
+    beta_start: 0.0001
+    beta_end: 0.02
+    num_diffusion_timesteps: 1000
+    # checkpoint_name: "256x256_diffusion_uncond.pt"
+    checkpoint_name: "ema_0.9999_026000.pt" # Path to your model checkpoint
+
+sampling:
+    batch_size: 8
+    last_only: True
