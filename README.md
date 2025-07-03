@@ -87,8 +87,10 @@ Bedroom noisy 4x super-resolution:
 python main.py --ni --config bedroom.yml --doc bedroom --timesteps 20 --eta 0.85 --etaB 1 --deg sr4 --sigma_0 0.05 -i bedroom_sr4_sigma_0.05
 ```
 
+Example usage:
+```
 python main.py --ni --config imagenet_256_custom.yml --doc imagenet_ood --timesteps 20 --eta 0.85 --etaB 1 --deg inp_tum --sigma_0 0.0 -i iw_warehouse_testing
-
+```
 ## References and Acknowledgements
 ```
 @inproceedings{kawar2022denoising,
